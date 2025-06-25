@@ -1,0 +1,100 @@
+name: Balance Review Enforcement
+
+on:
+  pull_request:
+    paths:
+      - 'balances.csv'
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+    
+jobs:
+  enforce-balances:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Checkout target branch
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          echo "Target branch: $BRANCH"
+
+          if [ -z "$BRANCH" ]; then
+            echo "Branch not set"
+            exit 1
+          fi
+
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH" || git checkout -b "$BRANCH" origin/"$BRANCH"
+          git pull origin "$BRANCH"
+        shell: bash
+
+
+      - name: Parse diff and check balances
+        id: check
+        run: |
+          set -e
+      
+          # Ensure only 2 lines were changed
+          CHANGED_LINES=$(git diff --unified=0 origin/"${{ github.base_ref }}" -- balances.csv | grep -E '^\+|^-' | grep -v '^---' | wc -l)
+          if [[ "$CHANGED_LINES" -ne 2 ]]; then
+            echo "❌ Only 2 lines can be changed. Detected $CHANGED_LINES changed lines."
+            exit 1
+          fi
+                # Calculate OLD_BALANCES with 100+ decimal precision
+          OLD_BALANCES=$(git show origin/"${{ github.base_ref }}":balances.csv | \
+            python3 -c "from decimal import Decimal, getcontext; import sys; getcontext().prec = 120; print(sum(Decimal(l.split(',')[1].strip()) for l in sys.stdin if ',' in l and len(l.split(',')) == 2))")
+          
+          # Calculate NEW_BALANCES with 100+ decimal precision
+          NEW_BALANCES=$(cat balances.csv | \
+            python3 -c "from decimal import Decimal, getcontext; import sys; getcontext().prec = 120; print(sum(Decimal(l.split(',')[1].strip()) for l in sys.stdin if ',' in l and len(l.split(',')) == 2))")
+
+      
+          if [[ "$OLD_BALANCES" != "$NEW_BALANCES" ]]; then
+            echo "❌ Balance mismatch: before=$OLD_BALANCES after=$NEW_BALANCES"
+            exit 1
+          fi
+      
+          echo "✅ Balance preserved and only two lines changed"
+
+      
+      - name: Remove repo owner from list
+        id: filter
+        run: |
+          grep -v "^${{ github.repository_owner }}$" usernames.txt > remove.txt || true
+          echo "REVIEWERS=$(paste -sd, remove.txt)" >> $GITHUB_ENV
+          
+      - name: Get reviewers from changed rows
+        id: reviewers
+        run: |
+          git show HEAD^:balances.csv > old.csv
+          git diff -U0 HEAD^ HEAD -- balances.csv | grep '^[-+]' | grep -v '^---' | cut -c2- > changed.csv
+          grep -Fxf changed.csv old.csv | cut -d',' -f1 | sort -u > reviewers.txt
+          echo "REVIEWERS=$(paste -sd, reviewers.txt)" >> $GITHUB_OUTPUT
+      
+      - name: Remove repo owner from reviewers
+        run: |
+          REPO_OWNER=$(gh repo view --json owner --jq '.owner.login')
+          gh pr edit "$PR_URL" --remove-reviewer "$REPO_OWNER"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          
+      - name: Request review from changed users
+        run: |
+          gh pr edit "$PR_URL" --add-reviewer $(cat reviewers.txt | paste -sd "," -)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+
+
