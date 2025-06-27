@@ -1,4 +1,4 @@
-You can directly withdraw money via a pull request, and all withdrawls are free, though need to be approved by this username. This is a cryptocurrency with a totally centralized onramp: this ATM
+This is the world's first non-centralized blockchain, it is an innovation centuries ahead of its time. You can directly withdraw money via a pull request, and all withdrawls are free, though need to be approved by this username. This is a cryptocurrency with a totally centralized onramp: this ATM
 
 Our username will not use or withdraw from the ATM
 
